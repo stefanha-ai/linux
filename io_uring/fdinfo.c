@@ -6,6 +6,7 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/io_uring.h>
+#include <linux/poll.h> /* For EPOLLIN, etc. */
 
 #include <uapi/linux/io_uring.h>
 
@@ -14,6 +15,7 @@
 #include "fdinfo.h"
 #include "cancel.h"
 #include "rsrc.h"
+#include "poll.h" /* For struct io_poll, io_kiocb_to_cmd */
 
 #ifdef CONFIG_NET_RX_BUSY_POLL
 static __cold void common_tracking_show_fdinfo(struct io_ring_ctx *ctx,
@@ -54,6 +56,42 @@ static inline void napi_show_fdinfo(struct io_ring_ctx *ctx,
 {
 }
 #endif
+
+/* Helper to print poll events */
+static void io_show_poll_events(struct seq_file *m, __poll_t events)
+{
+	bool first = true;
+
+#define PRINT_EVENT(event) \
+	if (events & event) { \
+		if (!first) \
+			seq_puts(m, "|"); \
+		seq_puts(m, #event); \
+		first = false; \
+	}
+
+	PRINT_EVENT(EPOLLIN);
+	PRINT_EVENT(EPOLLPRI);
+	PRINT_EVENT(EPOLLOUT);
+	PRINT_EVENT(EPOLLRDNORM);
+	PRINT_EVENT(EPOLLRDBAND);
+	PRINT_EVENT(EPOLLWRNORM);
+	PRINT_EVENT(EPOLLWRBAND);
+	PRINT_EVENT(EPOLLMSG);
+	PRINT_EVENT(EPOLLERR);
+	PRINT_EVENT(EPOLLHUP);
+	PRINT_EVENT(EPOLLRDHUP);
+	PRINT_EVENT(EPOLLEXCLUSIVE);
+	PRINT_EVENT(EPOLLWAKEUP);
+	PRINT_EVENT(EPOLLONESHOT);
+	PRINT_EVENT(EPOLLET);
+
+#undef PRINT_EVENT
+
+	if (first)
+		seq_puts(m, "0");
+}
+
 
 static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 {
@@ -197,9 +235,27 @@ static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 		struct io_hash_bucket *hb = &ctx->cancel_table.hbs[i];
 		struct io_kiocb *req;
 
-		hlist_for_each_entry(req, &hb->list, hash_node)
-			seq_printf(m, "  op=%d, task_works=%d\n", req->opcode,
-					task_work_pending(req->tctx->task));
+		hlist_for_each_entry(req, &hb->list, hash_node) {
+			seq_printf(m, "  op=%d (%s), task_works=%d",
+				   req->opcode, io_uring_get_opcode(req->opcode),
+				   task_work_pending(req->tctx->task));
+			if (req->opcode == IORING_OP_POLL_ADD) {
+				struct io_poll *poll = io_kiocb_to_cmd(req, struct io_poll);
+				seq_puts(m, ", events=");
+				io_show_poll_events(m, poll->events);
+				if (req->file) {
+					char buf[256]; /* For seq_file_path */
+					char *path_str = seq_file_path(req->file, buf, sizeof(buf) -1);
+					if (!IS_ERR_OR_NULL(path_str)) {
+						seq_printf(m, ", file=%s", path_str);
+					} else if (req->file->f_inode) {
+						seq_printf(m, ", inode=%lu", req->file->f_inode->i_ino);
+					}
+				}
+				/* req->fd is the uring fd, not the polled fd for POLL_ADD */
+			}
+			seq_puts(m, "\n");
+		}
 	}
 
 	seq_puts(m, "CqOverflowList:\n");
