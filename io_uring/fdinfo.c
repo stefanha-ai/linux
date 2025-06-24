@@ -17,6 +17,41 @@
 #include "rsrc.h"
 #include "poll.h" /* For struct io_poll, io_kiocb_to_cmd */
 
+/* Helper to print poll events */
+static void io_show_poll_events(struct seq_file *m, __poll_t events)
+{
+	bool first = true;
+
+#define PRINT_EVENT(event) \
+	if (events & event) { \
+		if (!first) \
+			seq_puts(m, "|"); \
+		seq_puts(m, #event); \
+		first = false; \
+	}
+
+	PRINT_EVENT(EPOLLIN);
+	PRINT_EVENT(EPOLLPRI);
+	PRINT_EVENT(EPOLLOUT);
+	PRINT_EVENT(EPOLLRDNORM);
+	PRINT_EVENT(EPOLLRDBAND);
+	PRINT_EVENT(EPOLLWRNORM);
+	PRINT_EVENT(EPOLLWRBAND);
+	PRINT_EVENT(EPOLLMSG);
+	PRINT_EVENT(EPOLLERR);
+	PRINT_EVENT(EPOLLHUP);
+	PRINT_EVENT(EPOLLRDHUP);
+	PRINT_EVENT(EPOLLEXCLUSIVE);
+	PRINT_EVENT(EPOLLWAKEUP);
+	PRINT_EVENT(EPOLLONESHOT);
+	PRINT_EVENT(EPOLLET);
+
+#undef PRINT_EVENT
+
+	if (first)
+		seq_puts(m, "0");
+}
+
 #ifdef CONFIG_NET_RX_BUSY_POLL
 static __cold void common_tracking_show_fdinfo(struct io_ring_ctx *ctx,
 					       struct seq_file *m,
@@ -56,42 +91,6 @@ static inline void napi_show_fdinfo(struct io_ring_ctx *ctx,
 {
 }
 #endif
-
-/* Helper to print poll events */
-static void io_show_poll_events(struct seq_file *m, __poll_t events)
-{
-	bool first = true;
-
-#define PRINT_EVENT(event) \
-	if (events & event) { \
-		if (!first) \
-			seq_puts(m, "|"); \
-		seq_puts(m, #event); \
-		first = false; \
-	}
-
-	PRINT_EVENT(EPOLLIN);
-	PRINT_EVENT(EPOLLPRI);
-	PRINT_EVENT(EPOLLOUT);
-	PRINT_EVENT(EPOLLRDNORM);
-	PRINT_EVENT(EPOLLRDBAND);
-	PRINT_EVENT(EPOLLWRNORM);
-	PRINT_EVENT(EPOLLWRBAND);
-	PRINT_EVENT(EPOLLMSG);
-	PRINT_EVENT(EPOLLERR);
-	PRINT_EVENT(EPOLLHUP);
-	PRINT_EVENT(EPOLLRDHUP);
-	PRINT_EVENT(EPOLLEXCLUSIVE);
-	PRINT_EVENT(EPOLLWAKEUP);
-	PRINT_EVENT(EPOLLONESHOT);
-	PRINT_EVENT(EPOLLET);
-
-#undef PRINT_EVENT
-
-	if (first)
-		seq_puts(m, "0");
-}
-
 
 static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 {
@@ -244,15 +243,16 @@ static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 				seq_puts(m, ", events=");
 				io_show_poll_events(m, poll->events);
 				if (req->file) {
-					char buf[256]; /* For seq_file_path */
-					char *path_str = seq_file_path(req->file, buf, sizeof(buf) -1);
-					if (!IS_ERR_OR_NULL(path_str)) {
-						seq_printf(m, ", file=%s", path_str);
-					} else if (req->file->f_inode) {
-						seq_printf(m, ", inode=%lu", req->file->f_inode->i_ino);
-					}
+					seq_puts(m, ", file=");
+					seq_file_path(m, req->file, " \t\n\\");
 				}
-				/* req->fd is the uring fd, not the polled fd for POLL_ADD */
+				/* As established, req->fd is uring_fd, not polled fd.
+				 * Inode is an alternative if path via seq_file_path is not desired,
+				 * but seq_file_path is generally preferred and handles various cases.
+				 * Example: if (req->file && req->file->f_inode) {
+				 *    seq_printf(m, ", inode=%lu", req->file->f_inode->i_ino);
+				 * }
+				 */
 			}
 			seq_puts(m, "\n");
 		}
