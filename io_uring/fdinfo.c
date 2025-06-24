@@ -6,6 +6,7 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/io_uring.h>
+#include <linux/eventpoll.h>
 
 #include <uapi/linux/io_uring.h>
 
@@ -14,6 +15,7 @@
 #include "fdinfo.h"
 #include "cancel.h"
 #include "rsrc.h"
+#include "poll.h"
 
 #ifdef CONFIG_NET_RX_BUSY_POLL
 static __cold void common_tracking_show_fdinfo(struct io_ring_ctx *ctx,
@@ -54,6 +56,128 @@ static inline void napi_show_fdinfo(struct io_ring_ctx *ctx,
 {
 }
 #endif
+
+static __cold void show_poll_events(struct seq_file *m, __poll_t events)
+{
+	bool first = true;
+	
+	if (events & EPOLLIN) {
+		seq_puts(m, "EPOLLIN");
+		first = false;
+	}
+	if (events & EPOLLOUT) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLOUT");
+		first = false;
+	}
+	if (events & EPOLLPRI) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLPRI");
+		first = false;
+	}
+	if (events & EPOLLERR) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLERR");
+		first = false;
+	}
+	if (events & EPOLLHUP) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLHUP");
+		first = false;
+	}
+	if (events & EPOLLNVAL) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLNVAL");
+		first = false;
+	}
+	if (events & EPOLLRDNORM) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLRDNORM");
+		first = false;
+	}
+	if (events & EPOLLRDBAND) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLRDBAND");
+		first = false;
+	}
+	if (events & EPOLLWRNORM) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLWRNORM");
+		first = false;
+	}
+	if (events & EPOLLWRBAND) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLWRBAND");
+		first = false;
+	}
+	if (events & EPOLLMSG) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLMSG");
+		first = false;
+	}
+	if (events & EPOLLRDHUP) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLRDHUP");
+		first = false;
+	}
+	if (events & EPOLLEXCLUSIVE) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLEXCLUSIVE");
+		first = false;
+	}
+	if (events & EPOLLWAKEUP) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLWAKEUP");
+		first = false;
+	}
+	if (events & EPOLLONESHOT) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLONESHOT");
+		first = false;
+	}
+	if (events & EPOLLET) {
+		if (!first) seq_puts(m, "|");
+		seq_puts(m, "EPOLLET");
+		first = false;
+	}
+	
+	/* If no known events, show the raw value */
+	if (first)
+		seq_printf(m, "0x%x", events);
+}
+
+static __cold void show_poll_file_info(struct seq_file *m, struct file *file, struct io_ring_ctx *ctx)
+{
+	if (!file) {
+		seq_puts(m, "file=<null>");
+		return;
+	}
+	
+	/* Try to find the file descriptor by looking through registered files */
+	int fd = -1;
+	for (unsigned int i = 0; i < ctx->file_table.data.nr; i++) {
+		struct file *f = NULL;
+		if (ctx->file_table.data.nodes[i])
+			f = io_slot_file(ctx->file_table.data.nodes[i]);
+		if (f == file) {
+			fd = i;
+			break;
+		}
+	}
+
+	if (fd >= 0) {
+		seq_printf(m, "fd=%d", fd);
+	} else {
+		/* Try to show the file path */
+		if (file->f_path.dentry && file->f_path.mnt) {
+			seq_puts(m, "file=");
+			seq_file_path(m, file, " \t\n\\");
+		} else {
+			/* Fallback to inode number */
+			seq_printf(m, "inode=%lu", file_inode(file)->i_ino);
+		}
+	}
+}
 
 static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 {
@@ -197,9 +321,21 @@ static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 		struct io_hash_bucket *hb = &ctx->cancel_table.hbs[i];
 		struct io_kiocb *req;
 
-		hlist_for_each_entry(req, &hb->list, hash_node)
-			seq_printf(m, "  op=%d, task_works=%d\n", req->opcode,
-					task_work_pending(req->tctx->task));
+		hlist_for_each_entry(req, &hb->list, hash_node) {
+			if (req->opcode == IORING_OP_POLL_ADD) {
+				struct io_poll *poll = io_kiocb_to_cmd(req, struct io_poll);
+				
+				seq_printf(m, "  op=%d (POLL_ADD), task_works=%d, events=", 
+					   req->opcode, task_work_pending(req->tctx->task));
+				show_poll_events(m, poll->events);
+				seq_puts(m, ", ");
+				show_poll_file_info(m, poll->file, ctx);
+				seq_puts(m, "\n");
+			} else {
+				seq_printf(m, "  op=%d, task_works=%d\n", req->opcode,
+						task_work_pending(req->tctx->task));
+			}
+		}
 	}
 
 	seq_puts(m, "CqOverflowList:\n");
