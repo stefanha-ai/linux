@@ -15,6 +15,43 @@
 #include "cancel.h"
 #include "rsrc.h"
 
+static void __io_uring_print_poll_events(struct seq_file *s, __poll_t events)
+{
+	seq_puts(s, ", events=");
+	if (events & EPOLLIN)
+		seq_puts(s, "IN|");
+	if (events & EPOLLPRI)
+		seq_puts(s, "PRI|");
+	if (events & EPOLLOUT)
+		seq_puts(s, "OUT|");
+	if (events & EPOLLERR)
+		seq_puts(s, "ERR|");
+	if (events & EPOLLHUP)
+		seq_puts(s, "HUP|");
+	if (events & EPOLLNVAL)
+		seq_puts(s, "NVAL|");
+	if (events & EPOLLRDNORM)
+		seq_puts(s, "RDNORM|");
+	if (events & EPOLLRDBAND)
+		seq_puts(s, "RDBAND|");
+	if (events & EPOLLWRNORM)
+		seq_puts(s, "WRNORM|");
+	if (events & EPOLLWRBAND)
+		seq_puts(s, "WRBAND|");
+	if (events & EPOLLMSG)
+		seq_puts(s, "MSG|");
+	if (events & EPOLLRDHUP)
+		seq_puts(s, "RDHUP|");
+	if (events & EPOLLEXCLUSIVE)
+		seq_puts(s, "EXCLUSIVE|");
+	if (events & EPOLLWAKEUP)
+		seq_puts(s, "WAKEUP|");
+	if (events & EPOLLONESHOT)
+		seq_puts(s, "ONESHOT|");
+	if (events & EPOLLET)
+		seq_puts(s, "ET|");
+}
+
 #ifdef CONFIG_NET_RX_BUSY_POLL
 static __cold void common_tracking_show_fdinfo(struct io_ring_ctx *ctx,
 					       struct seq_file *m,
@@ -107,10 +144,10 @@ static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 		seq_printf(m, "%5u: opcode:%s, fd:%d, flags:%x, off:%llu, "
 			      "addr:0x%llx, rw_flags:0x%x, buf_index:%d "
 			      "user_data:%llu",
-			   sq_idx, io_uring_get_opcode(sqe->opcode), sqe->fd,
-			   sqe->flags, (unsigned long long) sqe->off,
-			   (unsigned long long) sqe->addr, sqe->rw_flags,
-			   sqe->buf_index, sqe->user_data);
+			sq_idx, io_uring_get_opcode(sqe->opcode), sqe->fd,
+			sqe->flags, (unsigned long long) sqe->off,
+			(unsigned long long) sqe->addr, sqe->rw_flags,
+			sqe->buf_index, sqe->user_data);
 		if (sq_shift) {
 			u64 *sqeb = (void *) (sqe + 1);
 			int size = sizeof(struct io_uring_sqe) / sizeof(u64);
@@ -197,9 +234,22 @@ static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 		struct io_hash_bucket *hb = &ctx->cancel_table.hbs[i];
 		struct io_kiocb *req;
 
-		hlist_for_each_entry(req, &hb->list, hash_node)
-			seq_printf(m, "  op=%d, task_works=%d\n", req->opcode,
+		hlist_for_each_entry(req, &hb->list, hash_node) {
+			seq_printf(m, "  op=%d, task_works=%d", req->opcode,
 					task_work_pending(req->tctx->task));
+			if (req->opcode == IORING_OP_POLL_ADD) {
+				struct io_poll *poll = io_kiocb_to_cmd(req, struct io_poll);
+
+				__io_uring_print_poll_events(m, poll->events);
+				if (req->file) {
+					seq_puts(m, ", file=");
+					seq_file_path(m, req->file, " \t\n\\");
+				} else {
+					seq_printf(m, ", fd=%d", req->fd);
+				}
+			}
+			seq_puts(m, "\n");
+		}
 	}
 
 	seq_puts(m, "CqOverflowList:\n");
